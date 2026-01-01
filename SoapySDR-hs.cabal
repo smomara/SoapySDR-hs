@@ -1,0 +1,45 @@
+cabal-version: 3.0
+name:          SoapySDR-hs
+version:       0.1.0.0
+license:       BSD-3-Clause
+license-file:  LICENSE
+author:        Sean O'Mara
+maintainer:    mseanomara@gmail.com
+category:      Development
+build-type:    Simple
+
+common opts
+  ghc-options:        -Werror -Wall
+  default-language:   GHC2024
+  default-extensions: ImportQualifiedPost
+
+library bindings
+  import:            opts
+  exposed-modules:   SoapySDR.Bindings
+  other-modules:
+    SoapySDR.Bindings.FunPtr
+    SoapySDR.Bindings.Safe
+    SoapySDR.Bindings.Unsafe
+
+  build-depends:
+    , base
+    , ghc-prim
+    , hs-bindgen-runtime
+    , primitive
+
+  hs-source-dirs:    bindings
+  pkgconfig-depends: SoapySDR
+
+library
+  import:             opts
+  exposed-modules:    SoapySDR
+  hs-source-dirs:     src
+  default-extensions:
+    DuplicateRecordFields
+    NoFieldSelectors
+    OverloadedRecordDot
+
+  build-depends:
+    , base
+    , SoapySDR-hs:bindings
+    , text
