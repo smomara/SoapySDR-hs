@@ -25,7 +25,7 @@ module SoapySDR
   , getFullDuplex
   ) where
 
-import Control.Exception (Exception (..), throwIO)
+import Control.Exception (Exception (..), bracket, throwIO)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Foreign.C qualified as FC
@@ -105,7 +105,10 @@ withDevice mempty $ \\device -> do
 @
 -}
 withDevice :: DeviceArgs -> (Device -> IO a) -> IO a
-withDevice args f = withArgs args $ \argsPtr -> f . Device =<< Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+withDevice args = bracket make unmake
+ where
+  make = withArgs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+  unmake = Unsafe.soapySDRDevice_unmake . devicePtr
 
 -- * Identification API
 
