@@ -15,8 +15,8 @@ common opts
 
 library bindings
   import:            opts
-  exposed-modules:   SoapySDR.Bindings
-  other-modules:
+  exposed-modules:
+    SoapySDR.Bindings
     SoapySDR.Bindings.FunPtr
     SoapySDR.Bindings.Safe
     SoapySDR.Bindings.Unsafe
@@ -35,11 +35,14 @@ library
   exposed-modules:    SoapySDR
   hs-source-dirs:     src
   default-extensions:
+    DeriveAnyClass
     DuplicateRecordFields
     NoFieldSelectors
     OverloadedRecordDot
+    OverloadedStrings
 
   build-depends:
     , base
+    , containers
     , SoapySDR-hs:bindings
     , text
