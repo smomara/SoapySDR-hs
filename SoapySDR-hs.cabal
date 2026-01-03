@@ -42,6 +42,7 @@ library
     OverloadedStrings
 
   build-depends:
+    , attoparsec
     , base
     , containers
     , SoapySDR-hs:bindings
