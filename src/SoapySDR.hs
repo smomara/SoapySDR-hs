@@ -24,6 +24,8 @@ module SoapySDR
     -- * API
 
     -- ** Device Management
+  , lastStatus
+  , lastError
   , enumerate
   , enumerateWithFilter
   , makeDevice
@@ -144,7 +146,22 @@ data SoapySDRError
   | SoapySDRUnderflow
   | SoapySDRUnknownError Int
   deriving stock (Eq, Show, Generic)
+
+data SoapySDRException = SoapySDRException SoapySDRError String
+  deriving stock (Eq, Show, Generic)
   deriving anyclass Exception
+
+assertSuccess :: IO ()
+assertSuccess = do
+  status <- lastStatus
+  throwIfError status
+
+throwIfError :: Integral a => a -> IO ()
+throwIfError status = case toError status of
+  Nothing -> pure ()
+  Just e -> do
+    msg <- lastError
+    throwIO $ SoapySDRException e msg
 
 -- ** Data Types
 
@@ -215,6 +232,12 @@ formatToString fmt =
 
 -- ** Device Management
 
+lastStatus :: IO FC.CInt
+lastStatus = Unsafe.soapySDRDevice_lastStatus
+
+lastError :: IO String
+lastError = peekCString . ConstPtr.unConstPtr =<< Unsafe.soapySDRDevice_lastError
+
 enumerate :: IO [Kwargs]
 enumerate = enumerateWithFilter mempty
 
@@ -224,16 +247,16 @@ enumerateWithFilter args = withKwargs args $ \argsPtr ->
     =<< withOutputArray (Unsafe.soapySDRDevice_enumerate (ConstPtr.ConstPtr argsPtr))
 
 makeDevice :: Kwargs -> IO Device
-makeDevice args = withKwargs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+makeDevice args = withKwargs args $ \argsPtr -> do
+  p <- Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+  assertSuccess
+  pure $ Device p
 
 unmakeDevice :: Device -> IO ()
 unmakeDevice device = throwIfError =<< Unsafe.soapySDRDevice_unmake (devicePtr device)
 
 withDevice :: Kwargs -> (Device -> IO a) -> IO a
-withDevice args = bracket make unmake
- where
-  make = withKwargs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
-  unmake = Unsafe.soapySDRDevice_unmake . devicePtr
+withDevice args = bracket (makeDevice args) unmakeDevice
 
 -- ** Identification API
 
@@ -299,7 +322,7 @@ getStreamFormats device dir chan =
 
 getNativeStreamFormat :: Device -> Direction -> Channel -> IO Format
 getNativeStreamFormat device dir chan =
-  maybe (throwIO SoapySDRCorruption) pure . parseFormat
+  maybe (throwIO $ toException SoapySDRCorruption) pure . parseFormat
     =<< peekCString
     =<< with
       0
@@ -414,7 +437,7 @@ toArgInfo info = do
   description <- peekCString info.soapySDRArgInfo_description
   units <- peekCString info.soapySDRArgInfo_units
   argType <-
-    maybe (throwIO SoapySDRCorruption) pure $ toArgType info.soapySDRArgInfo_type
+    maybe (throwIO $ toException SoapySDRCorruption) pure $ toArgType info.soapySDRArgInfo_type
   let numOptions = fromIntegral info.soapySDRArgInfo_numOptions
       range = toRange info.soapySDRArgInfo_range
   options <- peekCStringArray numOptions info.soapySDRArgInfo_options
@@ -431,9 +454,6 @@ toArgInfo info = do
       numOptions
       options
       optionNames
-
-throwIfError :: Integral a => a -> IO ()
-throwIfError n = maybe mempty throwIO $ toError n
 
 toError :: Integral a => a -> Maybe SoapySDRError
 toError (-1) = Just SoapySDRTimeout
@@ -461,3 +481,6 @@ withOutputArray action = with 0 $ \lengthPtr -> do
   resultPtr <- action lengthPtr
   len <- peek lengthPtr
   peekArray (fromIntegral len) resultPtr
+
+toException :: SoapySDRError -> SoapySDRException
+toException e = SoapySDRException e ""
