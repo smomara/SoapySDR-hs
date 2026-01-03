@@ -15,6 +15,9 @@ module SoapySDR
 
     -- ** Data Types
   , Format (..)
+  , pattern CF32
+  , pattern CS16
+  , pattern CS8
   , NumberType (..)
   , parseFormat
 
@@ -51,7 +54,7 @@ module SoapySDR
   ) where
 
 import Control.Exception (Exception, bracket, throwIO)
-import Data.Attoparsec.Text (Parser, char, choice, decimal, option, parseOnly)
+import Data.Attoparsec.Text (Parser, char, choice, decimal, option, parseOnly, endOfInput)
 import Data.Coerce (coerce)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
@@ -151,12 +154,24 @@ data NumberType
   | Unsigned
   deriving stock (Eq, Show, Enum, Bounded, Generic)
 
+data Domain = Real | Complex
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+
 data Format = Format
-  { isComplex :: Bool
+  { domain :: Domain
   , numberType :: NumberType
   , bits :: Int
   }
   deriving stock (Eq, Show, Generic)
+
+pattern CF32 :: Format
+pattern CF32 = Format Complex Float 32
+
+pattern CS16 :: Format
+pattern CS16 = Format Complex Signed 16
+
+pattern CS8 :: Format
+pattern CS8 = Format Complex Signed 8
 
 numberType :: Parser NumberType
 numberType =
@@ -166,28 +181,32 @@ numberType =
     , Unsigned <$ char 'U'
     ]
 
-isComplex :: Parser Bool
-isComplex = option False (True <$ char 'C')
+domain :: Parser Domain
+domain = option Real (Complex <$ char 'C')
 
 format :: Parser Format
 format =
   Format
-    <$> isComplex
+    <$> domain
     <*> numberType
     <*> decimal
 
 parseFormat :: String -> Maybe Format
-parseFormat str = either (const Nothing) Just $ parseOnly format (Text.pack str)
+parseFormat str = either (const Nothing) Just $ parseOnly (format <* endOfInput) (Text.pack str)
 
 numberTypeToString :: NumberType -> String
 numberTypeToString Float = "F"
 numberTypeToString Signed = "S"
 numberTypeToString Unsigned = "U"
 
+domainToString :: Domain -> String
+domainToString Complex = "C"
+domainToString Real = ""
+
 formatToString :: Format -> String
 formatToString fmt =
   mconcat
-    [ if fmt.isComplex then "C" else ""
+    [ domainToString fmt.domain
     , numberTypeToString fmt.numberType
     , show fmt.bits
     ]
