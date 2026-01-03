@@ -34,6 +34,11 @@ library
   import:             opts
   exposed-modules:    SoapySDR
   hs-source-dirs:     src
+  ghc-options:
+    -Weverything -Wno-unsafe -Wno-missing-kind-signatures
+    -Wno-missing-safe-haskell-mode -Wno-implicit-prelude
+    -Wno-all-missed-specialisations
+
   default-extensions:
     DeriveAnyClass
     DuplicateRecordFields

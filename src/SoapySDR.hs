@@ -39,7 +39,7 @@ module SoapySDR
   , deactivateStream
   ) where
 
-import Control.Exception (Exception (..), bracket, throwIO)
+import Control.Exception (Exception, bracket, throwIO)
 import Data.Attoparsec.Text (Parser, char, choice, decimal, option, parseOnly)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
@@ -50,7 +50,7 @@ import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Array (peekArray, withArray0, withArrayLen)
 import Foreign.Marshal.Utils (toBool, with, withMany)
 import Foreign.Ptr qualified as Ptr
-import GHC.Generics
+import GHC.Generics (Generic)
 
 import SoapySDR.Bindings qualified as Bindings
 import SoapySDR.Bindings.Unsafe qualified as Unsafe
