@@ -3,46 +3,59 @@ module SoapySDR
 
     -- ** Core Types
     Device ()
-  , DeviceArgs (..)
+  , Kwargs (..)
   , Direction (..)
   , Channel (..)
+  , Range (..)
+  , ArgType (..)
+  , ArgInfo (..)
 
     -- ** Error Handling
   , SoapySDRError (..)
 
-    -- ** Date Types
+    -- ** Data Types
   , Format (..)
   , NumberType (..)
   , parseFormat
 
-    -- * Device Management
+    -- * API
+
+    -- ** Device Management
+  , enumerate
+  , enumerateWithFilter
   , makeDevice
   , unmakeDevice
   , withDevice
 
-    -- * Identification API
+    -- ** Identification API
   , getDriverKey
   , getHardwareKey
   , getHardwareInfo
 
-    -- * Channels API
+    -- ** Channels API
   , setFrontendMapping
   , getFrontendMapping
   , getChannelInfo
   , getFullDuplex
 
-    -- * Stream API
+    -- ** Stream API
+  , getStreamFormats
+  , getNativeStreamFormat
+  , getStreamArgsInfo
   , setupStream
   , closeStream
   , withStream
+  , getStreamMTU
   , activateStream
   , deactivateStream
   ) where
 
 import Control.Exception (Exception, bracket, throwIO)
 import Data.Attoparsec.Text (Parser, char, choice, decimal, option, parseOnly)
+import Data.Coerce (coerce)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Text qualified as Text
 import Foreign.C qualified as FC
 import Foreign.C.ConstPtr qualified as ConstPtr
@@ -50,6 +63,7 @@ import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Array (peekArray, withArray0, withArrayLen)
 import Foreign.Marshal.Utils (toBool, with, withMany)
 import Foreign.Ptr qualified as Ptr
+import Foreign.Storable (Storable, peek)
 import GHC.Generics (Generic)
 
 import SoapySDR.Bindings qualified as Bindings
@@ -59,87 +73,90 @@ import SoapySDR.Bindings.Unsafe qualified as Unsafe
 
 -- ** Core Types
 
-{- | An opaque handle to a SoapySDR device.
-
-Use `withDevice` to safely acquire and release device resources.
--}
 newtype Device = Device (Ptr.Ptr Bindings.SoapySDRDevice)
   deriving stock (Eq, Show, Generic)
 
-{- | Extract the underlying device pointer.
-
-This functin provides safe access to the device pointer without exposing the constructor.
--}
 devicePtr :: Device -> Ptr.Ptr Bindings.SoapySDRDevice
 devicePtr (Device p) = p
 
-{- | Device arguments as key-value pairs.
-
->>> DeviceArgs (Map.fromList [("driver", "rtlsdr")])
-DeviceArgs {unDeviceArgs = fromList [("driver","rtlsdr")]}
--}
-newtype DeviceArgs = DeviceArgs {unDeviceArgs :: Map String String}
+newtype Kwargs = Kwargs {unKwargs :: Map String String}
   deriving stock (Eq, Show, Generic)
   deriving newtype (Semigroup, Monoid)
 
--- | RF signal direction.
 data Direction
-  = -- | Receive direction
-    RX
-  | -- | Transmit direction
-    TX
+  = RX
+  | TX
   deriving stock (Eq, Show, Enum, Bounded, Generic)
 
-{- | Channel identifier.
-
-Channels are typically numbered starting from 0.
--}
 newtype Channel = Channel Int
   deriving stock Generic
   deriving newtype (Eq, Show, Ord, Enum, Bounded, Num, Integral, Real)
 
-{- | An opaque handle to a stream.
-
-Streams are created with `setupStream` and must be closed with `closeStream`.
--}
-newtype Stream = Stream (Ptr.Ptr Bindings.SoapySDRStream)
+data Stream = Stream
+  { numBuffers :: Int
+  , ptr :: Ptr.Ptr Bindings.SoapySDRStream
+  }
   deriving stock (Eq, Show, Generic)
 
-{- | Extract the underlying stream pointer.
-
-This function provides safe access to the stream pointer without exposing the constructor.
--}
 streamPtr :: Stream -> Ptr.Ptr Bindings.SoapySDRStream
-streamPtr (Stream p) = p
+streamPtr stream = stream.ptr
 
--- | Number type for stream formats.
-data NumberType
-  = -- | Floating point numbers
-    Float
-  | -- | Signed integers
-    Signed
-  | -- | Unsigned integers
-    Unsigned
+data ArgType
+  = ArgTypeBool
+  | ArgTypeInt
+  | ArgTypeFloat
+  | ArgTypeString
   deriving stock (Eq, Show, Enum, Bounded, Generic)
 
-{- | Stream format specification.
+data Range = Range
+  { minimum :: Double
+  , maximum :: Double
+  , step :: Double
+  }
+  deriving stock (Eq, Show, Generic)
 
-SoapySDR uses format strings like:
-- "CF32" - complex float32
-- "CS16" - complex int16
-- "CS12" - complex int12
-- "S32"  - int32
-- "U8"   - uint8
--}
+data ArgInfo = ArgInfo
+  { key :: String
+  , value :: String
+  , name :: String
+  , description :: String
+  , units :: String
+  , argType :: ArgType
+  , range :: Range
+  , numOptions :: Int
+  , options :: [String]
+  , optionNames :: [String]
+  }
+  deriving stock (Eq, Show, Generic)
+
+-- ** Error Handling
+
+data SoapySDRError
+  = SoapySDRTimeout
+  | SoapySDRStreamError
+  | SoapySDRCorruption
+  | SoapySDROverflow
+  | SoapySDRNotSupported
+  | SoapySDRTimeError
+  | SoapySDRUnderflow
+  | SoapySDRUnknownError Int
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass Exception
+
+-- ** Data Types
+
+data NumberType
+  = Float
+  | Signed
+  | Unsigned
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+
 data Format = Format
   { isComplex :: Bool
-  -- ^ True for complex (I/Q pairs)
   , numberType :: NumberType
   , bits :: Int
   }
   deriving stock (Eq, Show, Generic)
-
--- ** Format Parsing
 
 numberType :: Parser NumberType
 numberType =
@@ -175,49 +192,31 @@ formatToString fmt =
     , show fmt.bits
     ]
 
--- ** Error Handling
+-- * API
 
-{- | SoapySDR error with error code.
+-- ** Device Management
 
-Error codes follow the SoapySDR C API conventions where 0 indicates success and non-zero values indiciate error conditions.
--}
-data SoapySDRError
-  = SoapySDRTimeout
-  | SoapySDRStreamError
-  | SoapySDRCorruption
-  | SoapySDROverflow
-  | SoapySDRNotSupported
-  | SoapySDRTimeError
-  | SoapySDRUnderflow
-  | SoapySDRUnknownError Int
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass Exception
+enumerate :: IO [Kwargs]
+enumerate = enumerateWithFilter mempty
 
--- * Device Management
+enumerateWithFilter :: Kwargs -> IO [Kwargs]
+enumerateWithFilter args = withKwargs args $ \argsPtr ->
+  mapM toKwargs
+    =<< withOutputArray (Unsafe.soapySDRDevice_enumerate (ConstPtr.ConstPtr argsPtr))
 
-makeDevice :: DeviceArgs -> IO Device
-makeDevice args = withArgs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+makeDevice :: Kwargs -> IO Device
+makeDevice args = withKwargs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
 
 unmakeDevice :: Device -> IO ()
 unmakeDevice device = throwIfError =<< Unsafe.soapySDRDevice_unmake (devicePtr device)
 
-{- | Safely acquire and use a SoapySDR device.
-
-The device is automatically released when the action completes or throws an exception.
-
-@
-withDevice mempty $ \\device -> do
-  driver <- getDriverKey device
-  putStrLn driver
-@
--}
-withDevice :: DeviceArgs -> (Device -> IO a) -> IO a
+withDevice :: Kwargs -> (Device -> IO a) -> IO a
 withDevice args = bracket make unmake
  where
-  make = withArgs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
+  make = withKwargs args $ \argsPtr -> Device <$> Unsafe.soapySDRDevice_make (ConstPtr.ConstPtr argsPtr)
   unmake = Unsafe.soapySDRDevice_unmake . devicePtr
 
--- * Identification API
+-- ** Identification API
 
 getDriverKey :: Device -> IO String
 getDriverKey device =
@@ -229,12 +228,12 @@ getHardwareKey device =
   peekCString
     =<< Unsafe.soapySDRDevice_getDriverKey (ConstPtr.ConstPtr $ devicePtr device)
 
-getHardwareInfo :: Device -> IO DeviceArgs
+getHardwareInfo :: Device -> IO Kwargs
 getHardwareInfo device =
-  toDeviceArgs
+  toKwargs
     =<< Unsafe.soapySDRDevice_getHardwareInfo (ConstPtr.ConstPtr $ devicePtr device)
 
--- * Channels API
+-- ** Channels API
 
 setFrontendMapping :: Device -> Direction -> String -> IO ()
 setFrontendMapping device dir mapping = withCString mapping $ \cstring ->
@@ -251,9 +250,9 @@ getFrontendMapping device dir =
       (ConstPtr.ConstPtr $ devicePtr device)
       (fromDirection dir)
 
-getChannelInfo :: Device -> Direction -> Channel -> IO DeviceArgs
+getChannelInfo :: Device -> Direction -> Channel -> IO Kwargs
 getChannelInfo device dir chan =
-  toDeviceArgs
+  toKwargs
     =<< Unsafe.soapySDRDevice_getChannelInfo
       (ConstPtr.ConstPtr $ devicePtr device)
       (fromDirection dir)
@@ -267,16 +266,48 @@ getFullDuplex device dir chan =
       (fromDirection dir)
       (fromChannel chan)
 
--- * Stream API
+-- ** Stream API
+
+getStreamFormats :: Device -> Direction -> Channel -> IO [Format]
+getStreamFormats device dir chan =
+  fmap (mapMaybe parseFormat) . mapM peekCString
+    =<< withOutputArray
+      ( Unsafe.soapySDRDevice_getStreamFormats
+          (ConstPtr.ConstPtr $ devicePtr device)
+          (fromDirection dir)
+          (fromChannel chan)
+      )
+
+getNativeStreamFormat :: Device -> Direction -> Channel -> IO Format
+getNativeStreamFormat device dir chan =
+  maybe (throwIO SoapySDRCorruption) pure . parseFormat
+    =<< peekCString
+    =<< with
+      0
+      ( Unsafe.soapySDRDevice_getNativeStreamFormat
+          (ConstPtr.ConstPtr $ devicePtr device)
+          (fromDirection dir)
+          (fromChannel chan)
+      )
+
+getStreamArgsInfo :: Device -> Direction -> Channel -> IO [ArgInfo]
+getStreamArgsInfo device dir chan =
+  mapM toArgInfo
+    =<< withOutputArray
+      ( Unsafe.soapySDRDevice_getStreamArgsInfo
+          (ConstPtr.ConstPtr $ devicePtr device)
+          (fromDirection dir)
+          (fromChannel chan)
+      )
 
 setupStream
-  :: Device -> Direction -> Format -> [Channel] -> DeviceArgs -> IO Stream
+  :: Device -> Direction -> Format -> [Channel] -> Kwargs -> IO Stream
 setupStream device dir fmt chans args =
   withCString (formatToString fmt)
     $ \fmtCStr -> withChannelArray chans
-      $ \chansPtr chansLen -> withArgs args
+      $ \chansPtr chansLen -> withKwargs args
         $ \argsPtr ->
-          Stream
+          Stream (length chans)
             <$> Unsafe.soapySDRDevice_setupStream
               (devicePtr device)
               (fromDirection dir)
@@ -295,10 +326,16 @@ withStream
   -> Direction
   -> Format
   -> [Channel]
-  -> DeviceArgs
+  -> Kwargs
   -> (Stream -> IO a)
   -> IO a
 withStream device dir fmt chans args = bracket (setupStream device dir fmt chans args) (closeStream device)
+
+getStreamMTU :: Device -> Stream -> IO FC.CSize
+getStreamMTU device stream =
+  Unsafe.soapySDRDevice_getStreamMTU
+    (ConstPtr.ConstPtr $ devicePtr device)
+    (streamPtr stream)
 
 activateStream :: Device -> Stream -> IO ()
 activateStream device stream =
@@ -318,8 +355,8 @@ fromDirection = fromIntegral . fromEnum
 fromChannel :: Channel -> FC.CSize
 fromChannel (Channel n) = fromIntegral n
 
-withArgs :: DeviceArgs -> (Ptr.Ptr Bindings.SoapySDRKwargs -> IO a) -> IO a
-withArgs (DeviceArgs m) f = do
+withKwargs :: Kwargs -> (Ptr.Ptr Bindings.SoapySDRKwargs -> IO a) -> IO a
+withKwargs (Kwargs m) f = do
   withCStringArray (Map.keys m) $ \keys -> do
     withCStringArray (Map.elems m) $ \values -> do
       let size = fromIntegral (Map.size m)
@@ -329,22 +366,67 @@ withArgs (DeviceArgs m) f = do
 withChannelArray :: [Channel] -> (Ptr.Ptr FC.CSize -> FC.CSize -> IO a) -> IO a
 withChannelArray channels f = withArrayLen (map fromChannel channels) $ \len ptr -> f ptr (fromIntegral len)
 
-toDeviceArgs :: Bindings.SoapySDRKwargs -> IO DeviceArgs
-toDeviceArgs args = do
+toKwargs :: Bindings.SoapySDRKwargs -> IO Kwargs
+toKwargs args = do
   keys <- peekCStringArray args.soapySDRKwargs_size args.soapySDRKwargs_keys
   vals <- peekCStringArray args.soapySDRKwargs_size args.soapySDRKwargs_vals
-  pure . DeviceArgs . Map.fromList $ zip keys vals
+  pure . Kwargs . Map.fromList $ zip keys vals
+
+toRange :: Bindings.SoapySDRRange -> Range
+toRange range =
+  Range
+    { maximum = coerce range.soapySDRRange_maximum
+    , minimum = coerce range.soapySDRRange_minimum
+    , step = coerce range.soapySDRRange_step
+    }
+
+toArgType :: Bindings.SoapySDRArgInfoType -> Maybe ArgType
+toArgType Bindings.SOAPY_SDR_ARG_INFO_BOOL = Just ArgTypeBool
+toArgType Bindings.SOAPY_SDR_ARG_INFO_INT = Just ArgTypeInt
+toArgType Bindings.SOAPY_SDR_ARG_INFO_FLOAT = Just ArgTypeFloat
+toArgType Bindings.SOAPY_SDR_ARG_INFO_STRING = Just ArgTypeString
+toArgType _ = Nothing
+
+toArgInfo :: Bindings.SoapySDRArgInfo -> IO ArgInfo
+toArgInfo info = do
+  key <- peekCString info.soapySDRArgInfo_key
+  value <- peekCString info.soapySDRArgInfo_value
+  name <- peekCString info.soapySDRArgInfo_name
+  description <- peekCString info.soapySDRArgInfo_description
+  units <- peekCString info.soapySDRArgInfo_units
+  argType <-
+    maybe (throwIO SoapySDRCorruption) pure $ toArgType info.soapySDRArgInfo_type
+  let numOptions = fromIntegral info.soapySDRArgInfo_numOptions
+      range = toRange info.soapySDRArgInfo_range
+  options <- peekCStringArray numOptions info.soapySDRArgInfo_options
+  optionNames <- peekCStringArray numOptions info.soapySDRArgInfo_optionNames
+  pure
+    $ ArgInfo
+      key
+      value
+      name
+      description
+      units
+      argType
+      range
+      numOptions
+      options
+      optionNames
 
 throwIfError :: Integral a => a -> IO ()
-throwIfError 0 = pure ()
-throwIfError (-1) = throwIO SoapySDRTimeout
-throwIfError (-2) = throwIO SoapySDRStreamError
-throwIfError (-3) = throwIO SoapySDRCorruption
-throwIfError (-4) = throwIO SoapySDROverflow
-throwIfError (-5) = throwIO SoapySDRNotSupported
-throwIfError (-6) = throwIO SoapySDRTimeError
-throwIfError (-7) = throwIO SoapySDRUnderflow
-throwIfError n = throwIO . SoapySDRUnknownError $ fromIntegral n
+throwIfError n = maybe mempty throwIO $ toError n
+
+toError :: Integral a => a -> Maybe SoapySDRError
+toError (-1) = Just SoapySDRTimeout
+toError (-2) = Just SoapySDRStreamError
+toError (-3) = Just SoapySDRCorruption
+toError (-4) = Just SoapySDROverflow
+toError (-5) = Just SoapySDRNotSupported
+toError (-6) = Just SoapySDRTimeError
+toError (-7) = Just SoapySDRUnderflow
+toError n
+  | n >= 0 = Nothing
+  | otherwise = Just . SoapySDRUnknownError $ fromIntegral n
 
 withCStringArray :: [String] -> (Ptr.Ptr CString -> IO a) -> IO a
 withCStringArray strings f =
@@ -353,3 +435,10 @@ withCStringArray strings f =
 
 peekCStringArray :: Integral a => a -> Ptr.Ptr CString -> IO [String]
 peekCStringArray n p = mapM peekCString =<< peekArray (fromIntegral n) p
+
+withOutputArray
+  :: (Storable a, Storable b, Integral a) => (Ptr.Ptr a -> IO (Ptr.Ptr b)) -> IO [b]
+withOutputArray action = with 0 $ \lengthPtr -> do
+  resultPtr <- action lengthPtr
+  len <- peek lengthPtr
+  peekArray (fromIntegral len) resultPtr
