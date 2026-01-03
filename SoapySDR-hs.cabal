@@ -1,6 +1,12 @@
 cabal-version: 3.0
 name:          SoapySDR-hs
 version:       0.1.0.0
+synopsis:      Haskell bindings for SoapySDR
+description:
+  SoapySDR is a vendor-neutral API for accessing SDR hardware.
+  This package offers idiomatic Haskell wrappers around
+  the C libary with proper resource management and error handling.
+
 license:       BSD-3-Clause
 license-file:  LICENSE
 author:        Sean O'Mara
@@ -8,13 +14,31 @@ maintainer:    mseanomara@gmail.com
 category:      Development
 build-type:    Simple
 
-common opts
-  ghc-options:        -Werror -Wall
+source-repository head
+  type:     git
+  location: https://github.com/smomara/SoapySDR-hs
+
+flag strict
+  manual:  True
+  default: False
+
+common base-opts
   default-language:   GHC2024
   default-extensions: ImportQualifiedPost
+  ghc-options:        -Wall
+
+common strict-opts
+  import:      base-opts
+  ghc-options:
+    -Weverything -Wno-unsafe -Wno-missing-kind-signatures
+    -Wno-missing-safe-haskell-mode -Wno-implicit-prelude
+    -Wno-all-missed-specialisations -Wno-missing-local-signatures
+
+  if flag(strict)
+    ghc-options: -Werror
 
 library bindings
-  import:            opts
+  import:            base-opts
   exposed-modules:
     SoapySDR.Bindings
     SoapySDR.Bindings.FunPtr
@@ -22,7 +46,7 @@ library bindings
     SoapySDR.Bindings.Unsafe
 
   build-depends:
-    , base
+    , base >= 4.20 && < 5
     , ghc-prim
     , hs-bindgen-runtime
     , primitive
@@ -31,14 +55,9 @@ library bindings
   pkgconfig-depends: SoapySDR
 
 library
-  import:             opts
+  import:             strict-opts
   exposed-modules:    SoapySDR
   hs-source-dirs:     src
-  ghc-options:
-    -Weverything -Wno-unsafe -Wno-missing-kind-signatures
-    -Wno-missing-safe-haskell-mode -Wno-implicit-prelude
-    -Wno-all-missed-specialisations -Wno-missing-local-signatures
-
   default-extensions:
     DeriveAnyClass
     DuplicateRecordFields
@@ -49,7 +68,7 @@ library
 
   build-depends:
     , attoparsec
-    , base
+    , base >= 4.20 && < 5
     , containers
     , SoapySDR-hs:bindings
     , text
