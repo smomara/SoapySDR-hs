@@ -72,3 +72,4 @@ library
     , containers
     , SoapySDR-hs:bindings
     , text
+    , vector

@@ -53,22 +53,27 @@ module SoapySDR
   , getStreamMTU
   , activateStream
   , deactivateStream
+  , readStream
   ) where
 
 import Control.Exception (Exception, bracket, throwIO)
+import Control.Monad (forM, replicateM)
 import Data.Attoparsec.Text (Parser, char, choice, decimal, option, parseOnly, endOfInput)
 import Data.Coerce (coerce)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Text qualified as Text
+import Data.Vector.Storable qualified as VS
 import Foreign.C qualified as FC
 import Foreign.C.ConstPtr qualified as ConstPtr
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.Marshal.Array (peekArray, withArray0, withArrayLen)
+import Foreign.ForeignPtr qualified as ForeignPtr
+import Foreign.Marshal.Alloc (finalizerFree, free, mallocBytes)
+import Foreign.Marshal.Array (peekArray, withArray, withArray0, withArrayLen)
 import Foreign.Marshal.Utils (toBool, with, withMany)
 import Foreign.Ptr qualified as Ptr
-import Foreign.Storable (Storable, peek)
+import Foreign.Storable (Storable, peek, sizeOf)
 import GHC.Generics (Generic)
 
 import SoapySDR.Bindings qualified as Bindings
@@ -157,11 +162,12 @@ assertSuccess = do
   throwIfError status
 
 throwIfError :: Integral a => a -> IO ()
-throwIfError status = case toError status of
-  Nothing -> pure ()
-  Just e -> do
-    msg <- lastError
-    throwIO $ SoapySDRException e msg
+throwIfError status = maybe mempty throwError $ toError status
+
+throwError :: SoapySDRError -> IO a
+throwError e = do
+  msg <- lastError
+  throwIO $ SoapySDRException e msg
 
 -- ** Data Types
 
@@ -322,7 +328,7 @@ getStreamFormats device dir chan =
 
 getNativeStreamFormat :: Device -> Direction -> Channel -> IO Format
 getNativeStreamFormat device dir chan =
-  maybe (throwIO $ toException SoapySDRCorruption) pure . parseFormat
+  maybe (throwError SoapySDRCorruption) pure . parseFormat
     =<< peekCString
     =<< with
       0
@@ -389,6 +395,27 @@ deactivateStream device stream =
   throwIfError
     =<< Unsafe.soapySDRDevice_deactivateStream (devicePtr device) (streamPtr stream) 0 0
 
+readStream
+  :: forall a. Storable a => Device -> Stream -> Int -> IO [VS.Vector a]
+readStream device stream numElems = do
+  ptrs <- replicateM stream.numBuffers (mallocBytes numBytes)
+  res <- withArray ptrs $ \bufs ->
+    Unsafe.soapySDRDevice_readStream
+      (devicePtr device)
+      (streamPtr stream)
+      (ConstPtr.ConstPtr bufs)
+      (fromIntegral numElems)
+      Ptr.nullPtr -- flags
+      Ptr.nullPtr -- timestamp
+      100_000 -- timeout (set to default for now)
+  case toError res of
+    Nothing -> forM ptrs $ \ptr -> do
+      fptr <- ForeignPtr.newForeignPtr finalizerFree (Ptr.castPtr ptr)
+      pure $ VS.unsafeFromForeignPtr0 fptr (fromIntegral res)
+    Just e -> mapM_ free ptrs >> throwError e
+ where
+  numBytes = numElems * sizeOf (undefined :: a)
+
 -- * Internal Utilities
 
 fromDirection :: Direction -> FC.CInt
@@ -437,7 +464,7 @@ toArgInfo info = do
   description <- peekCString info.soapySDRArgInfo_description
   units <- peekCString info.soapySDRArgInfo_units
   argType <-
-    maybe (throwIO $ toException SoapySDRCorruption) pure $ toArgType info.soapySDRArgInfo_type
+    maybe (throwError SoapySDRCorruption) pure $ toArgType info.soapySDRArgInfo_type
   let numOptions = fromIntegral info.soapySDRArgInfo_numOptions
       range = toRange info.soapySDRArgInfo_range
   options <- peekCStringArray numOptions info.soapySDRArgInfo_options
@@ -481,6 +508,3 @@ withOutputArray action = with 0 $ \lengthPtr -> do
   resultPtr <- action lengthPtr
   len <- peek lengthPtr
   peekArray (fromIntegral len) resultPtr
-
-toException :: SoapySDRError -> SoapySDRException
-toException e = SoapySDRException e ""
